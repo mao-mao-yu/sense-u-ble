@@ -16,7 +16,6 @@
 
   "_misc": "── 其他 / Misc ──",
   "code_file":                "./baby_code.json",
-  "language":                 "zh",
   "host":                     "0.0.0.0",
   "port":                     8082,
   "log_level":                "INFO"

@@ -105,7 +105,6 @@ def main() -> None:
     log.info(f"sense-u-ble starting on http://{cfg.host}:{cfg.port}")
     log.info(f"  ble_address     {cfg.ble_address or '(empty — set in config.json)'}")
     log.info(f"  consumer_url    {cfg.consumer_url or '(empty — events not pushed)'}")
-    log.info(f"  language        {cfg.language}")
 
     app = _build_app(cfg, log)
     uvicorn.run(app, host=cfg.host, port=cfg.port, log_level="warning")

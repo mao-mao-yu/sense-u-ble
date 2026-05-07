@@ -80,7 +80,6 @@ Edit `config.json`. Minimal required fields:
 | `consumer_url` | — | URL to POST sensor/alert events to. Leave empty to skip pushing (events are still queryable via `GET /api/sensor`). |
 | `consumer_api_key` | `""` | If non-empty, sent as `X-API-Key: …` header to consumer. |
 | `code_file` | `./baby_code.json` | Where to load the pairing token. |
-| `language` | `zh` | Alert message language: `zh` / `ja` / `en`. |
 | `host` | `0.0.0.0` | HTTP bind address. |
 | `port` | `8082` | HTTP listen port. |
 | `log_level` | `INFO` | `DEBUG` / `INFO` / `WARNING`. |

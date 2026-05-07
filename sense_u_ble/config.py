@@ -51,7 +51,6 @@ class Config:
 
     # Misc
     code_file: Path
-    language: str
     host: str
     port: int
     log_level: str
@@ -78,7 +77,6 @@ class Config:
             consumer_url                = str(raw.get("consumer_url", "")),
             consumer_api_key            = str(raw.get("consumer_api_key", "")),
             code_file                   = code_file,
-            language                    = str(raw.get("language", "zh")),
             host                        = str(raw.get("host", "0.0.0.0")),
             port                        = int(raw.get("port", 8082)),
             log_level                   = str(raw.get("log_level", "INFO")),
