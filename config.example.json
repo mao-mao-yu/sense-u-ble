@@ -1,0 +1,30 @@
+{
+  "_identity": "── 设备识别 / Sensor identity ──",
+  "ble_address":              "AA:BB:CC:DD:EE:FF",
+  "ble_mac":                  "",
+  "ble_dump_raw":             false,
+
+  "_link": "── BLE 时序 / BLE link timing ──",
+  "ble_scan_timeout_s":       20,
+  "ble_connect_timeout_s":    15,
+  "ble_reconnect_delay_s":    10,
+  "ble_poll_interval_s":      2,
+
+  "_alerts": "── 告警阈值 / Alert thresholds ──",
+  "prone_alert_threshold_s":     30,
+  "prone_alert_cooldown_s":      300,
+  "breath_alert_threshold_rate": 8,
+  "breath_alert_duration_s":     20,
+  "breath_alert_cooldown_s":     300,
+
+  "_consumer": "── 消费方推送 / Consumer push ──",
+  "consumer_url":             "http://127.0.0.1:8080/api/internal/sensor",
+  "consumer_api_key":         "",
+
+  "_misc": "── 其他 / Misc ──",
+  "code_file":                "./baby_code.json",
+  "language":                 "zh",
+  "host":                     "0.0.0.0",
+  "port":                     8082,
+  "log_level":                "INFO"
+}

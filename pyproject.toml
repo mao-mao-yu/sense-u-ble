@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sense-u-ble"
+version = "0.1.0"
+description = "Sense-U Baby Pro BLE driver — protocol parser, async client, and HTTP service that streams sensor + alert events to a configurable consumer URL."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "mao-mao-yu" }]
+keywords = ["ble", "bluetooth", "sense-u", "baby-monitor", "iot"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Home Automation",
+    "Topic :: System :: Hardware",
+]
+dependencies = [
+    "bleak>=0.22",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "httpx>=0.27",
+]
+
+[project.urls]
+Homepage = "https://github.com/mao-mao-yu/sense-u-ble"
+Issues   = "https://github.com/mao-mao-yu/sense-u-ble/issues"
+
+[project.scripts]
+sense-u-ble = "sense_u_ble.service:main"
+
+[tool.setuptools.packages.find]
+include = ["sense_u_ble*"]
