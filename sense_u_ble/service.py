@@ -60,7 +60,7 @@ def _build_app(cfg: Config, log: logging.Logger) -> FastAPI:
                 "mode":      mode,
                 "message":   label,
                 "timestamp": datetime.now().strftime("%H:%M:%S"),
-            })
+            }, timeout=None)
             body = resp.json()
             return bool(body.get("ack", False))
         except Exception as e:
