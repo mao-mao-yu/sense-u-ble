@@ -23,6 +23,9 @@ battery**. sense-u-ble decodes those plus generates two derived alerts:
 - **Prone alert** — baby has been belly-down for ≥ N seconds
 - **Breathing alert** — breath rate < N for ≥ M seconds
 
+Device-initiated alerts (face-down, weak breath, temperature out of range, …)
+are also acknowledged back to the wearable so its LED stops flashing.
+
 ---
 
 ## Features
@@ -35,7 +38,9 @@ battery**. sense-u-ble decodes those plus generates two derived alerts:
 - **Cross-platform** — Linux (Pi recommended), macOS, Windows
 - **i18n** — alert messages in Chinese / Japanese / English (config-selected)
 - **Pairing tool included** — first-time pairing handshake reverse-engineered
-  from the [esphome-sense-u](https://github.com/esphome) project
+  from APK analysis of the official Sense-U app
+- **Alert ACK** — replies `0xF6` to device alert notifications so the wearable's
+  LED stops flashing immediately
 
 ---
 
@@ -144,7 +149,7 @@ Whenever a sensor frame is parsed or an alert fires, sense-u-ble POSTs JSON
 to `consumer_url`. Two event shapes:
 
 ```jsonc
-// type=sensor — every successful 0xBA poll
+// type=sensor — on every CHAR_2 push or 0xBA poll response
 {
   "type":        "sensor",
   "breath_rate": 32,
@@ -255,24 +260,45 @@ sense-u-ble/
 
 ## Protocol notes
 
-- The wearable advertises its name as **Sense-U Baby Pro**.
-- Pairing is a 4-step ATT exchange (`0x69 → 0x68 RegisterType` → device
-  responds with a 6-byte `baby_code` → store and reuse for reconnect).
-- After reconnect (`0x70 + baby_code + ts`), the host polls `0xBA
-  GetBabyData` every N seconds to read the multi-field response packet.
-- See [`sense_u_ble/protocol.py`](sense_u_ble/protocol.py) for the byte-level layout.
-- See [`tools/pairing.py`](tools/pairing.py) for the full handshake (more
-  exhaustively logged for debugging).
+The protocol was reverse-engineered from BLE traffic captures and confirmed
+against decompiled sources of the official Sense-U Android APK.
+
+**Characteristics** (last 12 hex chars = device MAC):
+
+| Name | UUID prefix | Role |
+|---|---|---|
+| CHAR_1 | `01021921-9e06-a079-2e3f` | Auth (`0x69/0x68/0x70`) |
+| CHAR_2 | `01021922-9e06-a079-2e3f` | Device → host real-time push |
+| CHAR_4 | `01021925-9e06-a079-2e3f` | Host → device commands & responses |
+
+**Connection flow:**
+
+1. **Pairing** (once): `0x69` UID → `0x68` RegisterType → device replies with
+   6-byte `baby_code` → saved to `baby_code.json`.
+2. **Reconnect**: subscribe CHAR_1 + CHAR_2 + CHAR_4, write `0x70 + baby_code + ts`
+   to CHAR_1.
+3. **Init chain** (on 0x70 ACK): `0xC0` → `0xF5` → `0xB2` → `0xB3` → `0xB0`
+   written to CHAR_4 in sequence, each triggered by the device's reply.
+4. **Data**: device pushes posture / breath / temperature / battery / alert
+   packets to **CHAR_2** in real time. `0xBA GetBabyData` on CHAR_4 gives a
+   full snapshot on demand (used for the polling loop and duration-based alerts).
+5. **Alert ACK**: on receiving a device-initiated alert packet from CHAR_2,
+   sense-u-ble sends `0xF6 BabyAlertAck` to CHAR_4 so the LED stops flashing.
+
+See [`sense_u_ble/protocol.py`](sense_u_ble/protocol.py) for byte-level packet
+layouts. See [`tools/pairing.py`](tools/pairing.py) for the full pairing
+handshake with verbose logging.
 
 ---
 
 ## Caveats
 
 - **Reverse-engineered protocol.** Future device firmware updates from
-  Sense-U might break things. Last verified: Baby Pro firmware as of
-  2026-Q1.
-- **No write-back.** sense-u-ble only reads sensor data and existing alerts;
-  it does not change device settings (alert thresholds on the device, etc).
+  Sense-U might break things. Last verified against APK decompiled sources
+  and Baby Pro firmware as of 2026-Q1.
+- **Alert thresholds are fixed.** The init chain sets device-side thresholds
+  to hardcoded defaults (high-temp 36°C / low-temp 20°C / breath 1–25 bpm).
+  Changing them requires editing the `pkt_*_alarm()` functions in `protocol.py`.
 - **Single device per service instance.** If you have multiple wearables,
   run multiple processes with different `port` and `ble_address`.
 
@@ -284,6 +310,8 @@ MIT — see [LICENSE](LICENSE).
 
 ## Acknowledgements
 
-- The original protocol mapping work in [esphome](https://github.com/esphome)
-  community projects.
+- Protocol connection flow originally traced in
+  [esphome-sense-u](https://github.com/esphome) community projects; byte-level
+  details confirmed and extended via APK decompilation of the official Sense-U
+  Android app.
 - [bleak](https://github.com/hbldh/bleak) for cross-platform BLE.
