@@ -144,12 +144,18 @@ def load_baby_code(code_file: Path) -> Optional[bytes]:
 
 # ── 解析 + 告警状态机 ────────────────────────────────────────────────
 
-_POSTURES = {0: "仰卧", 1: "俯卧", 2: "左侧卧", 3: "右侧卧", 4: "坐姿"}
+_POSTURES = {0: "supine", 1: "prone", 2: "left_side", 3: "right_side", 4: "sitting"}
 
 ALERT_MODES = {
-    2: "俯卧告警", 3: "温度过高", 4: "温度过低",
-    7: "降温提醒", 8: "呼吸过快", 9: "呼吸微弱",
-    10: "俯卧+呼吸微弱", 11: "活动提醒", 65: "趴睡呼吸微弱",
+    2: "prone alert",
+    3: "temperature high",
+    4: "temperature low",
+    7: "cooling reminder",
+    8: "breath fast",
+    9: "breath weak",
+    10: "prone + breath weak",
+    11: "activity alert",
+    65: "prone sleep breath weak",
 }
 
 

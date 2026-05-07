@@ -144,7 +144,7 @@ device-initiated alert. Two event shapes:
   "type":        "sensor",
   "breath_rate": 32,          // breaths/min, int, null if unknown
   "temperature": 36.5,        // in-clothing °C, float, null if unknown
-  "posture":     "仰卧",      // 仰卧/俯卧/左侧卧/右侧卧/坐姿, null if unknown
+  "posture":     "supine",    // supine/prone/left_side/right_side/sitting, null if unknown
   "battery":     78,          // 0–100 %, int, null if unknown
   "activity":    12,          // activity level 0–255, int, null if unknown
   "wearing":     true,        // sensor worn by baby, bool, null if unknown
@@ -158,7 +158,7 @@ device-initiated alert. Two event shapes:
   "type":      "alert",
   "level":     "danger",
   "mode":      2,             // raw alertMode from device (see alert mode table)
-  "message":   "俯卧告警",   // human-readable label
+  "message":   "prone alert", // human-readable label (see alert mode table)
   "timestamp": "13:42:30"
 }
 ```
@@ -444,19 +444,19 @@ Alert mode → ACK bitmask mapping (from APK `BleProtocol.getBabyAlertAckData`):
 | Alert mode (data[5]) | Label | byte[2] | byte[3] |
 |--------|-------|---------|---------|
 | 1 | — | `0x01` | `0x00` |
-| 2 | 俯卧告警 | `0x02` | `0x00` |
-| 3 | 温度过高 | `0x04` | `0x00` |
-| 4 | 温度过低 | `0x08` | `0x00` |
+| 2 | prone alert | `0x02` | `0x00` |
+| 3 | temperature high | `0x04` | `0x00` |
+| 4 | temperature low | `0x08` | `0x00` |
 | 5 | — | `0x10` | `0x00` |
 | 6 | — | `0x20` | `0x00` |
-| 7 | 降温提醒 | `0x40` | `0x00` |
-| 8 | 呼吸过快 | `0x80` | `0x00` |
-| 9 | 呼吸微弱 | `0x80` | `0x00` |
-| 10 | 俯卧+呼吸微弱 | `0x80` | `0x00` |
-| 11 | 活动提醒 | `0x00` | `0x01` |
+| 7 | cooling reminder | `0x40` | `0x00` |
+| 8 | breath fast | `0x80` | `0x00` |
+| 9 | breath weak | `0x80` | `0x00` |
+| 10 | prone + breath weak | `0x80` | `0x00` |
+| 11 | activity alert | `0x00` | `0x01` |
 | 48 | — | `0x80` | `0x00` |
 | 51 | — | `0x80` | `0x00` |
-| 65 | 趴睡呼吸微弱 | `0x80` | `0x00` |
+| 65 | prone sleep breath weak | `0x80` | `0x00` |
 | other | unknown | `0xFF` | `0xFF` |
 
 `delaySecond` is set to 300 (5 min) by default in this driver. The official
@@ -496,32 +496,33 @@ statusType  = ((data[0] << 8 | data[1]) >> 6) & 0x1F
 | 5 | Breath rate | `data[5]` = rate bpm (valid if < 200) |
 | 7 | Activity level | `data[5]` = 0–255 |
 
-Posture IDs:
+Posture IDs (value of `sensor_state["posture"]`):
 
-| ID | Label |
+| ID | Value |
 |----|-------|
-| 0 | 仰卧 (supine) |
-| 1 | 俯卧 (prone / face-down) — triggers prone alert |
-| 2 | 左侧卧 (left side) |
-| 3 | 右侧卧 (right side) |
-| 4 | 坐姿 (sitting) |
+| 0 | `"supine"` |
+| 1 | `"prone"` — triggers prone alert |
+| 2 | `"left_side"` |
+| 3 | `"right_side"` |
+| 4 | `"sitting"` |
 
-Alert modes (CHAR_2 rt=8, st=2):
+Alert modes — CHAR_2 rt=8, st=2 (value of alert `"message"` field):
 
-| alertMode | Label |
-|-----------|-------|
-| 2 | 俯卧告警 |
-| 3 | 温度过高 |
-| 4 | 温度过低 |
-| 7 | 降温提醒 |
-| 8 | 呼吸过快 |
-| 9 | 呼吸微弱 |
-| 10 | 俯卧+呼吸微弱 |
-| 11 | 活动提醒 |
-| 65 | 趴睡呼吸微弱 |
+| alertMode | message |
+|-----------|---------|
+| 2 | `"prone alert"` |
+| 3 | `"temperature high"` |
+| 4 | `"temperature low"` |
+| 7 | `"cooling reminder"` |
+| 8 | `"breath fast"` |
+| 9 | `"breath weak"` |
+| 10 | `"prone + breath weak"` |
+| 11 | `"activity alert"` |
+| 65 | `"prone sleep breath weak"` |
 
-On receiving `notify != 0`, the driver immediately sends `0xF6` to CHAR_4
-(`send_ack(alertMode)`) so the device LED stops flashing.
+On receiving `notify != 0`, the driver calls `on_device_alert(mode)`, which
+POSTs the alert to the consumer and conditionally sends `0xF6` based on the
+consumer's `{"ack": true/false}` response.
 
 #### CHAR_4 response — 0xBA snapshot
 
