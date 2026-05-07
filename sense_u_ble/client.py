@@ -45,9 +45,10 @@ async def run_loop(
 
     on_alert: async callable(message, level) 触发 prone / breath 告警时调用。
     """
-    addr = cfg.ble_address
+    addr     = cfg.ble_address
     char_reg = protocol.char_register(cfg)
-    char_set = protocol.char_settings(cfg)
+    char_rt  = protocol.char_realtime(cfg)   # CHAR_2 实时推送
+    char_set = protocol.char_settings(cfg)   # CHAR_4 指令/响应
 
     while True:
         code = protocol.load_baby_code(cfg.code_file)
@@ -84,7 +85,8 @@ async def run_loop(
                 continue
 
             log.info("找到设备，连接中...")
-            disc_evt = asyncio.Event()
+            disc_evt  = asyncio.Event()
+            init_done = asyncio.Event()   # 初始化链 C0→F5→B2→B3→B0 完成标志
             connect_ts = time.time()
 
             async with BleakClient(
@@ -96,26 +98,73 @@ async def run_loop(
                 log.info("已连接，等待 GATT 就绪...")
                 await asyncio.sleep(2.5)
 
+                # ── 初始化链：0x70 鉴权成功后按顺序发送，由 CHAR_4 回包驱动 ──
+                # 每收到前一条的 ACK 才发下一条，最终 set init_done
+                _INIT_CHAIN = [
+                    (0xC0, protocol.pkt_leaning,       "F5 LeaningType"),
+                    (0xF5, protocol.pkt_temp_alarm,    "B2 TempAlarm"),
+                    (0xB2, protocol.pkt_kicking_alarm, "B3 KickingAlarm"),
+                    (0xB3, protocol.pkt_breath_alarm,  "B0 BreathAlarm"),
+                    (0xB0, None,                       "初始化完成"),
+                ]
+
+                async def _send_ack(mode: int) -> None:
+                    """向 CHAR_4 发 0xF6，让设备停止闪灯。"""
+                    try:
+                        await client.write_gatt_char(
+                            char_set, protocol.pkt_alert_ack(mode), response=False
+                        )
+                        log.debug(f"0xF6 ACK 已发送: mode={mode}")
+                    except Exception as e:
+                        log.debug(f"0xF6 ACK 失败: {e}")
+
                 async def on_settings(_s, raw: bytearray):
                     d = bytes(raw)
-                    if d and d[0] == 0xBA:
+                    if not d:
+                        return
+                    h = d[0]
+                    if h == 0xBA:
                         await protocol.parse_baby_data(cfg, d, on_alert)
+                        return
+                    # 初始化链驱动
+                    for resp_hdr, next_fn, label in _INIT_CHAIN:
+                        if h == resp_hdr:
+                            if next_fn is not None:
+                                try:
+                                    await client.write_gatt_char(
+                                        char_set, next_fn(), response=False
+                                    )
+                                    log.debug(f"初始化链 → {label}")
+                                except Exception as e:
+                                    log.warning(f"初始化链发送失败 ({label}): {e}")
+                            else:
+                                log.info(label)
+                                init_done.set()
+                            break
 
                 async def on_register(_s, raw: bytearray):
                     d = bytes(raw)
                     if not d or d[0] != 0x70:
                         return
                     if len(d) >= 2 and d[1] == 0x00:
-                        log.info("鉴权成功！")
+                        log.info("鉴权成功！启动初始化链 (GET_BATCH)...")
                         state.sensor_state.update(ble_ok=True)
                         await state.broadcast({"type": "sensor", **state.sensor_state})
+                        try:
+                            await client.write_gatt_char(
+                                char_set, protocol.pkt_get_batch(), response=False
+                            )
+                        except Exception as e:
+                            log.warning(f"GET_BATCH 发送失败: {e}")
                     elif len(d) >= 2 and d[1] == 0x01:
                         log.error(
                             f"鉴权失败！baby_code 无效，请删除 {cfg.code_file} 后重新配对"
                         )
 
+                async def on_realtime(_s, raw: bytearray):
+                    await protocol.parse_realtime_data(bytes(raw), _send_ack)
+
                 def _wrap(name: str, handler):
-                    """如开 ble_dump_raw，先 hex dump 再交给原 handler。"""
                     async def _aw(s, raw):
                         if cfg.ble_dump_raw:
                             log.info(f"RX {name}: {bytes(raw).hex(' ')}")
@@ -124,6 +173,7 @@ async def run_loop(
 
                 for uuid, name, handler in [
                     (char_reg, "CHAR_1", on_register),
+                    (char_rt,  "CHAR_2", on_realtime),
                     (char_set, "CHAR_4", on_settings),
                 ]:
                     log.info(f"订阅 {name}...")
@@ -157,13 +207,21 @@ async def run_loop(
                 except Exception as e:
                     log.warning(f"鉴权写入失败: {e}")
 
-                # 立即拉一次完整快照，避免等 polling 间隔
+                # 等待初始化链完成（最多 20 秒），超时则直接进轮询
                 try:
-                    await client.write_gatt_char(char_set, protocol.pkt_get_baby_data(), response=True)
+                    await asyncio.wait_for(init_done.wait(), timeout=20)
+                except asyncio.TimeoutError:
+                    log.warning("初始化链超时，跳过直接进入轮询")
+
+                # 立即拉一次完整快照
+                try:
+                    await client.write_gatt_char(
+                        char_set, protocol.pkt_get_baby_data(), response=True
+                    )
                 except Exception:
                     pass
 
-                # 主循环：每 N 秒 polling 一次 0xBA
+                # 主循环：每 N 秒 polling 一次 0xBA（补充 CHAR_2 推送）
                 while not disc_evt.is_set():
                     try:
                         await asyncio.wait_for(disc_evt.wait(), timeout=cfg.ble_poll_interval_s)
