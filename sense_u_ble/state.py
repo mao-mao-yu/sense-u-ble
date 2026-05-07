@@ -14,10 +14,16 @@ sensor_state: dict[str, Any] = {
     "battery":     None,
     "ble_ok":      False,
     "last_update": None,
+    "activity":    None,   # 活动量 0–255
+    "wearing":     None,   # 佩戴状态 True/False
+    "charge":      None,   # 充电状态 0=未充电 1=充电中 2=已充满
 }
 
 # BLE 失联时清空的字段
-_BLE_DATA_FIELDS = ("breath_rate", "temperature", "posture", "battery", "last_update")
+_BLE_DATA_FIELDS = (
+    "breath_rate", "temperature", "posture", "battery", "last_update",
+    "activity", "wearing", "charge",
+)
 
 
 def clear_ble_data() -> None:

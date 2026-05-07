@@ -185,6 +185,12 @@ async def parse_realtime_data(
             if 0 <= bat <= 100:
                 state.sensor_state["battery"] = bat
                 log.debug(f"CHAR_2 电量: {bat}%")
+        elif st == 2:  # 未佩戴
+            state.sensor_state["wearing"] = False
+            log.debug("CHAR_2 佩戴: 未佩戴")
+        elif st == 3:  # 已佩戴
+            state.sensor_state["wearing"] = True
+            log.debug("CHAR_2 佩戴: 已佩戴")
 
     elif rt == 8:  # SPECIAL_RECORD
         if st == 1 and len(data) >= 8:  # 温度包
@@ -208,6 +214,10 @@ async def parse_realtime_data(
                 state.sensor_state["breath_rate"] = rate
                 log.debug(f"CHAR_2 呼吸: {rate} 次/min")
 
+        elif st == 7 and len(data) >= 6:  # 活动量包
+            state.sensor_state["activity"] = _u8(data[5])
+            log.debug(f"CHAR_2 活动量: {_u8(data[5])}")
+
         elif st == 2 and len(data) >= 7:  # 设备告警包
             mode   = _u8(data[5])
             notify = _u8(data[6])
@@ -228,7 +238,8 @@ async def parse_baby_data(cfg: Config, data: bytes,
 
     on_alert: async callable(message: str, level: str) — 由调用方传入告警发射器。
 
-    布局: [0]=0xBA [2]=姿势 [3-4]=衣内温度*10 LE [6]=呼吸 [9]=电量 [10]=佩戴
+    布局: [0]=0xBA [2]=姿势 [3-4]=衣内温度*10 LE [6]=呼吸 [7]=活动量
+          [9]=电量 [10]=佩戴(0x81=是) [11]=充电状态
     """
     global _last_prone_alert, _prone_since, _last_breath_alert, _low_breath_since
 
@@ -285,6 +296,11 @@ async def parse_baby_data(cfg: Config, data: bytes,
     if battery <= 100:
         state.sensor_state["battery"] = battery
         log.debug(f"电量: {battery}%")
+
+    state.sensor_state["activity"] = _u8(data[7])
+    state.sensor_state["wearing"]  = (_u8(data[10]) == 0x81)
+    if len(data) >= 12:
+        state.sensor_state["charge"] = _u8(data[11])
 
     if not state.sensor_state.get("ble_ok"):
         state.sensor_state["ble_ok"] = True
