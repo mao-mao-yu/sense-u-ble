@@ -18,13 +18,10 @@ Linux, macOS, Windows.
 ```
 
 The wearable measures **breath rate, posture, in-clothing temperature,
-battery**. sense-u-ble decodes those plus generates two derived alerts:
-
-- **Prone alert** — baby has been belly-down for ≥ N seconds
-- **Breathing alert** — breath rate < N for ≥ M seconds
-
-Device-initiated alerts (face-down, weak breath, temperature out of range, …)
-are also acknowledged back to the wearable so its LED stops flashing.
+battery, activity level, wearing state, and charge status**. Device-initiated
+alerts (prone, weak breath, temperature out of range, …) are forwarded to the
+consumer as `type=alert` events; the consumer's HTTP response controls whether
+the driver sends a `0xF6` ACK to stop the wearable's LED.
 
 ---
 
@@ -36,11 +33,10 @@ are also acknowledged back to the wearable so its LED stops flashing.
   need a websocket client or special SDK
 - **Auto-reconnect** — survives BLE drops, baby moving out of range, etc.
 - **Cross-platform** — Linux (Pi recommended), macOS, Windows
-- **i18n** — alert messages in Chinese / Japanese / English (config-selected)
 - **Pairing tool included** — first-time pairing handshake reverse-engineered
   from APK analysis of the official Sense-U app
-- **Alert ACK** — replies `0xF6` to device alert notifications so the wearable's
-  LED stops flashing immediately
+- **Consumer-controlled Alert ACK** — device alerts are forwarded to the
+  consumer; consumer replies `{"ack": true}` to send `0xF6` and stop the LED
 
 ---
 
@@ -81,11 +77,6 @@ Edit `config.json`. Minimal required fields:
 | `ble_connect_timeout_s` | 15 | GATT connect timeout. |
 | `ble_reconnect_delay_s` | 10 | Wait before next attempt after disconnect. |
 | `ble_poll_interval_s` | 2 | How often to poke 0xBA for fresh data. |
-| `prone_alert_threshold_s` | 30 | Prone for this long → first alert fires. |
-| `prone_alert_cooldown_s` | 300 | While still prone, repeat every this many seconds. |
-| `breath_alert_threshold_rate` | 8 | Breath/min below this is "low". |
-| `breath_alert_duration_s` | 20 | Low breath for this long → first alert fires. |
-| `breath_alert_cooldown_s` | 300 | While still low, repeat every this many seconds. |
 | `consumer_url` | — | URL to POST sensor/alert events to. Leave empty to skip pushing (events are still queryable via `GET /api/sensor`). |
 | `consumer_api_key` | `""` | If non-empty, sent as `X-API-Key: …` header to consumer. |
 | `code_file` | `./baby_code.json` | Where to load the pairing token. |
@@ -145,8 +136,8 @@ python -m sense_u_ble.service
 
 ## Consumer protocol
 
-Whenever a sensor frame is parsed or an alert fires, sense-u-ble POSTs JSON
-to `consumer_url`. Two event shapes:
+sense-u-ble POSTs JSON to `consumer_url` on every sensor frame and on every
+device-initiated alert. Two event shapes:
 
 ```jsonc
 // type=sensor — on every CHAR_2 push or 0xBA poll response
@@ -163,14 +154,41 @@ to `consumer_url`. Two event shapes:
   "last_update": "13:42:55"   // HH:MM:SS of last successful parse
 }
 
-// type=alert — prone or low-breath threshold crossed
+// type=alert — device-initiated alert from CHAR_2 (prone, weak breath, temperature, etc.)
 {
   "type":      "alert",
-  "level":     "danger",          // danger / warning / info
-  "message":   "俯卧警告\n持续 35 秒处于俯卧状态，请立即确认。",
+  "level":     "danger",
+  "mode":      2,             // raw alertMode from device (see alert mode table)
+  "message":   "俯卧告警",   // human-readable label
   "timestamp": "13:42:30"
 }
 ```
+
+### Alert ACK — controlling the device LED
+
+When the driver receives a device alert, it POSTs `type=alert` to the consumer
+**in a background task** (does not block BLE callbacks) and waits for the HTTP
+response. The consumer's response body controls whether the driver sends a
+`0xF6` ACK to stop the device's flashing LED:
+
+```jsonc
+// Consumer response body — tell the driver to stop the LED:
+{ "ack": true }
+
+// Consumer response body — keep LED flashing (user hasn't confirmed yet):
+{ "ack": false }
+// or an empty / non-JSON body → treated as false
+```
+
+The HTTP call has a **2-second timeout** (1-second connect). If the consumer is
+unreachable or slow, `ack` defaults to `false` — the LED keeps flashing.
+
+If `consumer_url` is empty, the driver always ACKs immediately (LED stops).
+
+**On device restart**: if the user power-cycles the wearable instead of
+confirming via the consumer, the BLE connection drops. The driver cancels all
+in-flight alert tasks at that point — no stale ACKs are sent to the new
+connection.
 
 Minimal Python receiver:
 
@@ -184,10 +202,9 @@ In your config.json:
 "consumer_url": "http://localhost:9000/ingest"
 ```
 
-If the consumer is offline, sense-u-ble logs a debug line and keeps running.
-Sensor/alert events are **fire-and-forget** — no retry queue. If you need
-delivery guarantees, run the consumer behind a queue (Redis Streams,
-RabbitMQ, etc.).
+Sensor events are **fire-and-forget** — no retry queue. Alert pushes block
+until the consumer responds (up to 2 s); use the `ack` field to signal
+confirmation.
 
 ---
 

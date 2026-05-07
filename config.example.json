@@ -10,13 +10,6 @@
   "ble_reconnect_delay_s":    10,
   "ble_poll_interval_s":      2,
 
-  "_alerts": "── 告警阈值 / Alert thresholds ──",
-  "prone_alert_threshold_s":     30,
-  "prone_alert_cooldown_s":      300,
-  "breath_alert_threshold_rate": 8,
-  "breath_alert_duration_s":     20,
-  "breath_alert_cooldown_s":     300,
-
   "_consumer": "── 消费方推送 / Consumer push ──",
   "consumer_url":             "http://127.0.0.1:8080/api/internal/sensor",
   "consumer_api_key":         "",

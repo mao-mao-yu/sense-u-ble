@@ -24,6 +24,7 @@ from fastapi.responses import JSONResponse
 
 from sense_u_ble import client, state
 from sense_u_ble.config import Config, init_logging
+from sense_u_ble.protocol import ALERT_MODES
 
 
 def _build_app(cfg: Config, log: logging.Logger) -> FastAPI:
@@ -47,18 +48,28 @@ def _build_app(cfg: Config, log: logging.Logger) -> FastAPI:
 
     state.set_broadcast(_push)
 
-    async def _on_alert(message: str, level: str) -> None:
-        # alert event 跟 sensor event 走同一推送通道，consumer 端通过 type 字段分流
-        await _push({
-            "type":      "alert",
-            "level":     level,
-            "message":   message,
-            "timestamp": datetime.now().strftime("%H:%M:%S"),
-        })
+    async def _on_device_alert(mode: int) -> bool:
+        """推送设备告警到 consumer，返回 True 表示 consumer 要求发 0xF6 ACK。"""
+        label = ALERT_MODES.get(mode, f"mode={mode}")
+        if not cfg.consumer_url:
+            return True  # 无 consumer，直接 ACK 避免 LED 持续闪烁
+        try:
+            resp = await push_client.post(cfg.consumer_url, json={
+                "type":      "alert",
+                "level":     "danger",
+                "mode":      mode,
+                "message":   label,
+                "timestamp": datetime.now().strftime("%H:%M:%S"),
+            })
+            body = resp.json()
+            return bool(body.get("ack", False))
+        except Exception as e:
+            log.debug(f"alert push failed ({type(e).__name__}): {e}")
+            return False
 
     @asynccontextmanager
     async def _lifespan(_: FastAPI):
-        loop_task = asyncio.create_task(client.run_loop(cfg, _on_alert))
+        loop_task = asyncio.create_task(client.run_loop(cfg, _on_device_alert))
         try:
             yield
         finally:

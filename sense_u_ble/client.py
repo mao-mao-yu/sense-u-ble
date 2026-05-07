@@ -39,11 +39,13 @@ async def request_refresh(cfg: Config) -> bool:
 
 async def run_loop(
     cfg: Config,
-    on_alert: Callable[[str, str], Awaitable[None]],
+    on_device_alert: Callable[[int], Awaitable[bool]],
 ) -> None:
     """永不退出的 BLE 连接 + polling 循环。
 
-    on_alert: async callable(message, level) 触发 prone / breath 告警时调用。
+    on_device_alert: async callable(mode: int) -> bool
+        由 service.py 提供；推送告警到 consumer，返回 True 表示 consumer 确认
+        已处理（发送 0xF6 ACK 停止设备闪灯），False 表示不发。
     """
     addr     = cfg.ble_address
     char_reg = protocol.char_register(cfg)
@@ -108,8 +110,9 @@ async def run_loop(
                     (0xB0, None,                       "初始化完成"),
                 ]
 
+                _alert_tasks: set[asyncio.Task] = set()
+
                 async def _send_ack(mode: int) -> None:
-                    """向 CHAR_4 发 0xF6，让设备停止闪灯。"""
                     try:
                         await client.write_gatt_char(
                             char_set, protocol.pkt_alert_ack(mode), response=False
@@ -118,13 +121,26 @@ async def run_loop(
                     except Exception as e:
                         log.debug(f"0xF6 ACK 失败: {e}")
 
+                async def _do_alert(mode: int) -> None:
+                    try:
+                        should_ack = await on_device_alert(mode)
+                        if should_ack:
+                            await _send_ack(mode)
+                    except asyncio.CancelledError:
+                        log.debug(f"告警任务已取消: mode={mode}")
+
+                async def on_alert_notify(mode: int) -> None:
+                    task = asyncio.create_task(_do_alert(mode))
+                    _alert_tasks.add(task)
+                    task.add_done_callback(_alert_tasks.discard)
+
                 async def on_settings(_s, raw: bytearray):
                     d = bytes(raw)
                     if not d:
                         return
                     h = d[0]
                     if h == 0xBA:
-                        await protocol.parse_baby_data(cfg, d, on_alert)
+                        await protocol.parse_baby_data(d)
                         return
                     # 初始化链驱动
                     for resp_hdr, next_fn, label in _INIT_CHAIN:
@@ -162,7 +178,7 @@ async def run_loop(
                         )
 
                 async def on_realtime(_s, raw: bytearray):
-                    await protocol.parse_realtime_data(bytes(raw), _send_ack)
+                    await protocol.parse_realtime_data(bytes(raw), on_alert_notify)
 
                 def _wrap(name: str, handler):
                     async def _aw(s, raw):
@@ -237,6 +253,9 @@ async def run_loop(
                         except Exception as ke:
                             log.warning(f"0xBA 发送失败: {ke}")
 
+                for task in list(_alert_tasks):
+                    task.cancel()
+                _alert_tasks.clear()
                 _current_client = None
                 elapsed = int(time.time() - connect_ts)
                 log.info(f"连接断开（持续 {elapsed}s）")

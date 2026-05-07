@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -14,7 +13,6 @@ from typing import Optional
 
 from sense_u_ble.config import Config
 from sense_u_ble import state
-from sense_u_ble.i18n import t
 
 log = logging.getLogger("sense_u_ble.protocol")
 
@@ -148,30 +146,24 @@ def load_baby_code(code_file: Path) -> Optional[bytes]:
 
 _POSTURES = {0: "仰卧", 1: "俯卧", 2: "左侧卧", 3: "右侧卧", 4: "坐姿"}
 
-_ALERT_MODES = {
+ALERT_MODES = {
     2: "俯卧告警", 3: "温度过高", 4: "温度过低",
     7: "降温提醒", 8: "呼吸过快", 9: "呼吸微弱",
     10: "俯卧+呼吸微弱", 11: "活动提醒", 65: "趴睡呼吸微弱",
 }
 
-# 模块级状态：用于告警去抖。每实例化新进程即重置；同一进程跨多次 parse 调用持续追踪。
-_last_prone_alert:  float = 0
-_prone_since:       float = 0
-_last_breath_alert: float = 0
-_low_breath_since:  float = 0
-
 
 async def parse_realtime_data(
     data: bytes,
-    send_ack,
+    on_device_alert,
 ) -> None:
     """解析 CHAR_2 实时推送包 → 更新 state.sensor_state。
 
-    告警包 (rt=8, st=2, notify≠0) 时立即调用 send_ack(mode) 写 0xF6 到 CHAR_4，
-    让设备停止闪灯。持续时间型告警（俯卧 / 呼吸过慢）仍由 parse_baby_data 的
-    0xBA 轮询负责，此处只更新状态字段。
+    告警包 (rt=8, st=2, notify≠0) 时调用 on_device_alert(mode)。
+    on_device_alert 由 client.py 提供，负责推送到 consumer 并按 consumer 响应
+    决定是否发送 0xF6 ACK（让设备停止闪灯）。
 
-    send_ack: async callable(mode: int) — 由 client.py 提供的 CHAR_4 写入闭包。
+    on_device_alert: async callable(mode: int) → None
     """
     if len(data) < 2:
         return
@@ -221,10 +213,10 @@ async def parse_realtime_data(
         elif st == 2 and len(data) >= 7:  # 设备告警包
             mode   = _u8(data[5])
             notify = _u8(data[6])
-            label  = _ALERT_MODES.get(mode, f"mode={mode}")
+            label  = ALERT_MODES.get(mode, f"mode={mode}")
             if notify != 0:
-                log.warning(f"设备告警: {label}  → 发送 0xF6 ACK 停止闪灯")
-                await send_ack(mode)
+                log.warning(f"设备告警: {label}")
+                await on_device_alert(mode)
             else:
                 log.debug(f"设备告警已解除: {label}")
 
@@ -232,17 +224,12 @@ async def parse_realtime_data(
     await state.broadcast({"type": "sensor", **state.sensor_state})
 
 
-async def parse_baby_data(cfg: Config, data: bytes,
-                          on_alert) -> None:
+async def parse_baby_data(data: bytes) -> None:
     """解析 0xBA get_baby_data 响应包 → 更新 state.sensor_state → broadcast。
-
-    on_alert: async callable(message: str, level: str) — 由调用方传入告警发射器。
 
     布局: [0]=0xBA [2]=姿势 [3-4]=衣内温度*10 LE [6]=呼吸 [7]=活动量
           [9]=电量 [10]=佩戴(0x81=是) [11]=充电状态
     """
-    global _last_prone_alert, _prone_since, _last_breath_alert, _low_breath_since
-
     if len(data) < 11:
         return
 
@@ -252,18 +239,6 @@ async def parse_baby_data(cfg: Config, data: bytes,
         log.debug(f"姿势: {_POSTURES[posture_id]}")
     else:
         log.warning(f"姿势 ID 未知: {posture_id} (0x{posture_id:02x})  data={data.hex(' ')}")
-
-    # 俯卧告警：持续 ≥ threshold 才首次报警，之后每 cooldown 秒重复一次（如仍俯卧）
-    now = time.time()
-    if posture_id == 1:
-        if _prone_since == 0:
-            _prone_since = now
-        elapsed = now - _prone_since
-        if elapsed >= cfg.prone_alert_threshold_s and (now - _last_prone_alert) > cfg.prone_alert_cooldown_s:
-            _last_prone_alert = now
-            await on_alert(t("alert_prone", cfg.language, seconds=int(elapsed)), "danger")
-    else:
-        _prone_since = 0
 
     # 衣内温度：data[3..4] 16-bit LE，单位 0.1°C
     temp = (_u8(data[4]) << 8 | _u8(data[3])) / 10.0
@@ -277,20 +252,6 @@ async def parse_baby_data(cfg: Config, data: bytes,
     if rate < 200:
         state.sensor_state["breath_rate"] = rate
         log.debug(f"呼吸频率: {rate} 次/min")
-
-        # 呼吸过低/停止告警
-        if rate < cfg.breath_alert_threshold_rate:
-            if _low_breath_since == 0:
-                _low_breath_since = now
-            elapsed_b = now - _low_breath_since
-            if elapsed_b >= cfg.breath_alert_duration_s and (now - _last_breath_alert) > cfg.breath_alert_cooldown_s:
-                _last_breath_alert = now
-                await on_alert(
-                    t("alert_breath", cfg.language, rate=rate, seconds=int(elapsed_b)),
-                    "danger",
-                )
-        else:
-            _low_breath_since = 0
 
     battery = _u8(data[9])
     if battery <= 100:

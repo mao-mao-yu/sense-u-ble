@@ -45,13 +45,6 @@ class Config:
     ble_reconnect_delay_s: float
     ble_poll_interval_s: float
 
-    # Alert thresholds
-    prone_alert_threshold_s: float
-    prone_alert_cooldown_s: float
-    breath_alert_threshold_rate: float
-    breath_alert_duration_s: float
-    breath_alert_cooldown_s: float
-
     # Consumer push
     consumer_url: str
     consumer_api_key: str
@@ -82,11 +75,6 @@ class Config:
             ble_connect_timeout_s       = float(raw.get("ble_connect_timeout_s", 15)),
             ble_reconnect_delay_s       = float(raw.get("ble_reconnect_delay_s", 10)),
             ble_poll_interval_s         = float(raw.get("ble_poll_interval_s", 2)),
-            prone_alert_threshold_s     = float(raw.get("prone_alert_threshold_s", 30)),
-            prone_alert_cooldown_s      = float(raw.get("prone_alert_cooldown_s", 300)),
-            breath_alert_threshold_rate = float(raw.get("breath_alert_threshold_rate", 8)),
-            breath_alert_duration_s     = float(raw.get("breath_alert_duration_s", 20)),
-            breath_alert_cooldown_s     = float(raw.get("breath_alert_cooldown_s", 300)),
             consumer_url                = str(raw.get("consumer_url", "")),
             consumer_api_key            = str(raw.get("consumer_api_key", "")),
             code_file                   = code_file,
