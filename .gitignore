@@ -22,3 +22,5 @@ build/
 Thumbs.db
 
 sense-u-apk/
+docs/
+logs/
