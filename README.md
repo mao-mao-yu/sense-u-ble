@@ -152,19 +152,22 @@ to `consumer_url`. Two event shapes:
 // type=sensor — on every CHAR_2 push or 0xBA poll response
 {
   "type":        "sensor",
-  "breath_rate": 32,
-  "temperature": 36.5,
-  "posture":     "仰卧",         // 仰卧 / 俯卧 / 左侧卧 / 右侧卧 / 坐姿
-  "battery":     78,
-  "ble_ok":      true,
-  "last_update": "13:42:55"
+  "breath_rate": 32,          // breaths/min, int, null if unknown
+  "temperature": 36.5,        // in-clothing °C, float, null if unknown
+  "posture":     "仰卧",      // 仰卧/俯卧/左侧卧/右侧卧/坐姿, null if unknown
+  "battery":     78,          // 0–100 %, int, null if unknown
+  "activity":    12,          // activity level 0–255, int, null if unknown
+  "wearing":     true,        // sensor worn by baby, bool, null if unknown
+  "charge":      0,           // 0=not charging, 1=charging, 2=full, null if unknown
+  "ble_ok":      true,        // BLE connection alive
+  "last_update": "13:42:55"   // HH:MM:SS of last successful parse
 }
 
 // type=alert — prone or low-breath threshold crossed
 {
   "type":      "alert",
   "level":     "danger",          // danger / warning / info
-  "message":   "🚨 俯卧警告\n持续 35 秒处于俯卧状态，请立即确认。",
+  "message":   "俯卧警告\n持续 35 秒处于俯卧状态，请立即确认。",
   "timestamp": "13:42:30"
 }
 ```
@@ -243,10 +246,10 @@ sense-u-ble/
 ├── sense_u_ble/                # The Python package
 │   ├── config.py               # Config dataclass + loader
 │   ├── i18n.py                 # zh/ja/en alert messages
-│   ├── state.py                # Sensor state + broadcast hook
-│   ├── protocol.py             # Pure parsing + alert state machine
-│   ├── client.py               # BLE connect/poll/reconnect loop
-│   └── service.py              # FastAPI HTTP + consumer push
+│   ├── state.py                # Sensor state dict + broadcast hook injection
+│   ├── protocol.py             # Pure parsing functions + alert state machine
+│   ├── client.py               # BLE connect/poll/reconnect loop (bleak)
+│   └── service.py              # FastAPI HTTP layer + consumer push
 ├── tools/
 │   ├── scan.py                 # List nearby BLE devices
 │   ├── pairing.py              # First-time pairing handshake
@@ -256,38 +259,276 @@ sense-u-ble/
     └── consumer.py             # Minimal HTTP receiver to plug into consumer_url
 ```
 
+**Module responsibilities:**
+
+| Module | Role |
+|---|---|
+| `config.py` | Loads `config.json`, exposes typed `Config` dataclass |
+| `state.py` | Singleton `sensor_state` dict; `set_broadcast()` / `broadcast()` hook |
+| `protocol.py` | Pure functions — UUID builders, packet builders, `parse_realtime_data`, `parse_baby_data`; alert debounce state machine |
+| `client.py` | `run_loop()` — BLE scan → connect → subscribe → auth → init chain → poll loop → reconnect |
+| `service.py` | FastAPI app; wires `on_alert` and `broadcast` hook; starts `run_loop` as background task |
+
 ---
 
-## Protocol notes
+## Protocol reference
 
-The protocol was reverse-engineered from BLE traffic captures and confirmed
-against decompiled sources of the official Sense-U Android APK.
+> Reverse-engineered from BLE traffic captures and confirmed against
+> decompiled sources of the official Sense-U Android APK (Baby Pro,
+> verified 2026-Q1). All integers are unsigned unless noted.
 
-**Characteristics** (last 12 hex chars = device MAC):
+### GATT characteristics
 
-| Name | UUID prefix | Role |
-|---|---|---|
-| CHAR_1 | `01021921-9e06-a079-2e3f` | Auth (`0x69/0x68/0x70`) |
-| CHAR_2 | `01021922-9e06-a079-2e3f` | Device → host real-time push |
-| CHAR_4 | `01021925-9e06-a079-2e3f` | Host → device commands & responses |
+All UUID suffixes are the last 12 hex digits of the device's **real MAC**
+(colons removed, lowercase). On macOS, `ble_address` is a CoreBluetooth UUID
+and cannot be used to derive the suffix — supply the real MAC in `ble_mac`.
 
-**Connection flow:**
+| Name   | UUID prefix              | Direction          | Role |
+|--------|--------------------------|--------------------|------|
+| CHAR_1 | `01021921-9e06-a079-2e3f` | write + notify    | Auth (0x69 / 0x68 / 0x70) |
+| CHAR_2 | `01021922-9e06-a079-2e3f` | notify (device→host) | Real-time push: posture, breath, temperature, battery, alerts |
+| CHAR_4 | `01021925-9e06-a079-2e3f` | write + notify    | Commands host→device; response notify device→host |
 
-1. **Pairing** (once): `0x69` UID → `0x68` RegisterType → device replies with
-   6-byte `baby_code` → saved to `baby_code.json`.
-2. **Reconnect**: subscribe CHAR_1 + CHAR_2 + CHAR_4, write `0x70 + baby_code + ts`
-   to CHAR_1.
-3. **Init chain** (on 0x70 ACK): `0xC0` → `0xF5` → `0xB2` → `0xB3` → `0xB0`
-   written to CHAR_4 in sequence, each triggered by the device's reply.
-4. **Data**: device pushes posture / breath / temperature / battery / alert
-   packets to **CHAR_2** in real time. `0xBA GetBabyData` on CHAR_4 gives a
-   full snapshot on demand (used for the polling loop and duration-based alerts).
-5. **Alert ACK**: on receiving a device-initiated alert packet from CHAR_2,
-   sense-u-ble sends `0xF6 BabyAlertAck` to CHAR_4 so the LED stops flashing.
+CHAR_3 (`01021923-…`) exists in the GATT table but is not used by this driver.
 
-See [`sense_u_ble/protocol.py`](sense_u_ble/protocol.py) for byte-level packet
-layouts. See [`tools/pairing.py`](tools/pairing.py) for the full pairing
-handshake with verbose logging.
+---
+
+### Connection flow (full session)
+
+```
+HOST                                    DEVICE
+ │  scan for BLE address                   │
+ │─────────────────────────────────────────▶│  (BLE advertisement)
+ │  connect GATT                           │
+ │  subscribe CHAR_1 notify                │
+ │  subscribe CHAR_2 notify                │
+ │  subscribe CHAR_4 notify                │
+ │  write CHAR_1: 0x70 pkt_reconnect       │  ← auth token (baby_code + timestamp)
+ │                                         │
+ │◀────────── CHAR_1 notify: 70 00 …  ─────│  auth success (d[1]==0x00)
+ │  write CHAR_4: 0xC0 01 (GET_BATCH)      │  ← init chain step 1
+ │◀────────── CHAR_4 notify: C0 …     ─────│
+ │  write CHAR_4: 0xF5 F2 32 03 (LEANING)  │  ← step 2: enable all alert switches
+ │◀────────── CHAR_4 notify: F5 …     ─────│
+ │  write CHAR_4: 0xB2 … (TEMP_ALARM)      │  ← step 3: set temperature thresholds
+ │◀────────── CHAR_4 notify: B2 …     ─────│
+ │  write CHAR_4: 0xB3 … (KICKING_ALARM)   │  ← step 4
+ │◀────────── CHAR_4 notify: B3 …     ─────│
+ │  write CHAR_4: 0xB0 01 19 (BREATH_ALARM)│  ← step 5: breath 1–25 bpm
+ │◀────────── CHAR_4 notify: B0 …     ─────│  init chain complete
+ │                                         │
+ │  write CHAR_4: 0xBA (get snapshot)      │  ← immediate first poll
+ │◀────────── CHAR_4 notify: BA …     ─────│  full snapshot (0xBA response)
+ │                                         │
+ │◀────────── CHAR_2 notify: …        ─────│  real-time push (continuous)
+ │  (every ble_poll_interval_s seconds)    │
+ │  write CHAR_4: 0xBA                     │  ← periodic poll
+ │◀────────── CHAR_4 notify: BA …     ─────│
+ │  (on device alert)                      │
+ │◀────────── CHAR_2 notify: alert    ─────│
+ │  write CHAR_4: 0xF6 (alert ACK)         │  ← stops LED flash immediately
+```
+
+The init chain **must complete** before the device sends CHAR_2 alert
+notifications. Each step is triggered by the previous ACK — do not send
+the next packet until the previous header byte echoes back on CHAR_4.
+
+---
+
+### Packet reference — host → device
+
+All host→device packets are 20 bytes unless noted. Unspecified bytes are 0x00.
+
+#### 0x70 — ReconnectType (auth) → CHAR_1
+
+| Offset | Len | Value |
+|--------|-----|-------|
+| 0 | 1 | `0x70` |
+| 1–6 | 6 | `baby_code` (6-byte pairing token from `baby_code.json`) |
+| 7–10 | 4 | Unix timestamp, big-endian |
+| 11–17 | 7 | `0x00` padding |
+
+Total: 18 bytes. Written with `response=False`.
+
+#### 0xC0 01 — GET_BATCH → CHAR_4
+
+| Offset | Len | Value |
+|--------|-----|-------|
+| 0 | 1 | `0xC0` |
+| 1 | 1 | `0x01` |
+| 2–19 | 18 | `0x00` |
+
+Triggers the init chain; device replies with `0xC0` echo on CHAR_4.
+
+#### 0xF5 F2 — LeaningType → CHAR_4
+
+| Offset | Len | Value |
+|--------|-----|-------|
+| 0 | 1 | `0xF5` |
+| 1 | 1 | `0xF2` |
+| 2 | 1 | `0x32` |
+| 3 | 1 | `0x03` |
+| 4–19 | 16 | `0x00` |
+
+Enables all alert switches on the device.
+
+#### 0xB2 — TempAlarm → CHAR_4
+
+| Offset | Len | Value |
+|--------|-----|-------|
+| 0 | 1 | `0xB2` |
+| 2–3 | 2 | High threshold: `0x68 0x01` = 360 = **36.0 °C × 10**, little-endian |
+| 4–5 | 2 | Low threshold: `0xC8 0x00` = 200 = **20.0 °C × 10**, little-endian |
+
+#### 0xB3 — KickingAlarm → CHAR_4
+
+| Offset | Len | Value |
+|--------|-----|-------|
+| 0 | 1 | `0xB3` |
+| 2 | 1 | `0x0F` |
+| 3 | 1 | `0x03` |
+
+#### 0xB0 — BreathAlarm → CHAR_4
+
+| Offset | Len | Value |
+|--------|-----|-------|
+| 0 | 1 | `0xB0` |
+| 1 | 1 | `0x01` — lower bound (1 bpm) |
+| 2 | 1 | `0x19` — upper bound (25 bpm) |
+
+#### 0xBA — GetBabyData → CHAR_4
+
+| Offset | Len | Value |
+|--------|-----|-------|
+| 0 | 1 | `0xBA` |
+| 1–19 | 19 | `0x00` |
+
+Written with `response=True`. Device replies immediately on CHAR_4 with the
+full sensor snapshot (see 0xBA response below). Used for periodic polling and
+duration-based alert logic.
+
+#### 0xF6 — BabyAlertAck → CHAR_4
+
+**18 bytes**, written with `response=False`. Must be sent within seconds of
+receiving an alert packet from CHAR_2, otherwise the device continues flashing
+its LED.
+
+| Offset | Len | Meaning |
+|--------|-----|---------|
+| 0 | 1 | `0xF6` |
+| 1 | 1 | `0x02` — recordType (always 2 from APP) |
+| 2 | 1 | Alert bitmask low byte (see table below) |
+| 3 | 1 | Alert bitmask high byte |
+| 4–5 | 2 | `0x00` |
+| 6–7 | 2 | `delaySecond` — seconds before device may re-send same alert, little-endian |
+| 8–17 | 10 | `0x00` |
+
+Alert mode → ACK bitmask mapping (from APK `BleProtocol.getBabyAlertAckData`):
+
+| Alert mode (data[5]) | Label | byte[2] | byte[3] |
+|--------|-------|---------|---------|
+| 1 | — | `0x01` | `0x00` |
+| 2 | 俯卧告警 | `0x02` | `0x00` |
+| 3 | 温度过高 | `0x04` | `0x00` |
+| 4 | 温度过低 | `0x08` | `0x00` |
+| 5 | — | `0x10` | `0x00` |
+| 6 | — | `0x20` | `0x00` |
+| 7 | 降温提醒 | `0x40` | `0x00` |
+| 8 | 呼吸过快 | `0x80` | `0x00` |
+| 9 | 呼吸微弱 | `0x80` | `0x00` |
+| 10 | 俯卧+呼吸微弱 | `0x80` | `0x00` |
+| 11 | 活动提醒 | `0x00` | `0x01` |
+| 48 | — | `0x80` | `0x00` |
+| 51 | — | `0x80` | `0x00` |
+| 65 | 趴睡呼吸微弱 | `0x80` | `0x00` |
+| other | unknown | `0xFF` | `0xFF` |
+
+`delaySecond` is set to 300 (5 min) by default in this driver. The official
+APK uses 65535 (never re-alert) for Baby Pro.
+
+---
+
+### Packet reference — device → host
+
+#### CHAR_2 real-time push — header decode
+
+Every CHAR_2 notification starts with a 2-byte header from which two fields
+are extracted:
+
+```
+recordType  = (data[0] >> 3) & 0x1F
+statusType  = ((data[0] << 8 | data[1]) >> 6) & 0x1F
+```
+
+`data[1..4]` typically contains a 4-byte timestamp (device epoch).
+
+**recordType = 6 (STATUS_RUNNING_RECORD)**
+
+| statusType | Meaning | Key bytes |
+|------------|---------|-----------|
+| 1 | Battery level | `data[6]` = 0–100 % |
+| 2 | Sensor removed (not wearing) | — |
+| 3 | Sensor attached (wearing) | — |
+
+**recordType = 8 (SPECIAL_RECORD)**
+
+| statusType | Meaning | Key bytes |
+|------------|---------|-----------|
+| 1 | Temperature (CHAR_2 variant) | `data[5..6]` = raw 16-bit BE; if raw ≥ 32768: raw = 32768 − raw; value = raw / 10.0 °C |
+| 2 | Device-initiated **alert** | `data[5]` = alertMode, `data[6]` = notify (0=cleared, non-zero=active) |
+| 4 | Posture | `data[5]` = posture ID (see table below) |
+| 5 | Breath rate | `data[5]` = rate bpm (valid if < 200) |
+| 7 | Activity level | `data[5]` = 0–255 |
+
+Posture IDs:
+
+| ID | Label |
+|----|-------|
+| 0 | 仰卧 (supine) |
+| 1 | 俯卧 (prone / face-down) — triggers prone alert |
+| 2 | 左侧卧 (left side) |
+| 3 | 右侧卧 (right side) |
+| 4 | 坐姿 (sitting) |
+
+Alert modes (CHAR_2 rt=8, st=2):
+
+| alertMode | Label |
+|-----------|-------|
+| 2 | 俯卧告警 |
+| 3 | 温度过高 |
+| 4 | 温度过低 |
+| 7 | 降温提醒 |
+| 8 | 呼吸过快 |
+| 9 | 呼吸微弱 |
+| 10 | 俯卧+呼吸微弱 |
+| 11 | 活动提醒 |
+| 65 | 趴睡呼吸微弱 |
+
+On receiving `notify != 0`, the driver immediately sends `0xF6` to CHAR_4
+(`send_ack(alertMode)`) so the device LED stops flashing.
+
+#### CHAR_4 response — 0xBA snapshot
+
+Response to `0xBA GetBabyData`, notified on CHAR_4 (header byte = `0xBA`).
+Minimum 12 bytes.
+
+| Offset | Len | Field | Notes |
+|--------|-----|-------|-------|
+| 0 | 1 | `0xBA` header | identifies this as a snapshot response |
+| 1 | 1 | — | unused |
+| 2 | 1 | posture ID | same ID table as CHAR_2 |
+| 3–4 | 2 | temperature | little-endian uint16 / 10.0 = °C; valid if 10.0 < value < 50.0 |
+| 5 | 1 | humidity | raw / 100.0 = fraction (0.0–1.0); capped at 1.0 |
+| 6 | 1 | breath rate | bpm; valid if < 200 |
+| 7 | 1 | activity level | 0–255 |
+| 8 | 1 | RSSI | signed, device-reported signal strength |
+| 9 | 1 | battery | 0–100 % |
+| 10 | 1 | wearing | `0x81` = wearing, else not |
+| 11 | 1 | charge | 0=not charging, 1=charging, 2=full |
+
+CHAR_4 also echoes the header byte of every init-chain command (C0, F5, B2,
+B3, B0) as the first byte of its response notification. `on_settings` in
+`client.py` uses this to drive the init chain state machine.
 
 ---
 
@@ -301,6 +542,10 @@ handshake with verbose logging.
   Changing them requires editing the `pkt_*_alarm()` functions in `protocol.py`.
 - **Single device per service instance.** If you have multiple wearables,
   run multiple processes with different `port` and `ble_address`.
+- **Humidity field exists but is not exposed.** The 0xBA snapshot includes
+  humidity at byte 5 (raw/100 = fraction), but `sensor_state` does not
+  currently track it. Add `"humidity": None` to `state.py` and read
+  `data[5] / 100.0` in `parse_baby_data` if you need it.
 
 ---
 
