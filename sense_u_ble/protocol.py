@@ -145,6 +145,9 @@ def load_baby_code(code_file: Path) -> Optional[bytes]:
 # ── 解析 + 告警状态机 ────────────────────────────────────────────────
 
 _POSTURES = {0: "supine", 1: "prone", 2: "left_side", 3: "right_side", 4: "sitting"}
+# 设备在充电状态下会上报 pid=5；不是真实姿势，仅作为 charging 信号——独立于 0xBA
+# 包里 data[11] 的 charge 字段（CHAR_2 流式包没有 charge byte，只能靠这个推断）。
+_POSTURE_CHARGING = 5
 
 ALERT_MODES = {
     2: "prone alert",
@@ -202,7 +205,11 @@ async def parse_realtime_data(
 
         elif st == 4 and len(data) >= 6:  # 姿势包
             pid = _u8(data[5])
-            if pid in _POSTURES:
+            if pid == _POSTURE_CHARGING:
+                # 充电中——CHAR_2 流式包没 data[11] charge byte，只能靠 pid=5 推断
+                state.sensor_state["charge"] = state.sensor_state.get("charge") or 1
+                log.debug("CHAR_2 姿势 ID=5 → 充电中")
+            elif pid in _POSTURES:
                 state.sensor_state["posture"] = _POSTURES[pid]
                 log.debug(f"CHAR_2 姿势: {_POSTURES[pid]}")
 
@@ -240,7 +247,10 @@ async def parse_baby_data(data: bytes) -> None:
         return
 
     posture_id = _u8(data[2])
-    if posture_id in _POSTURES:
+    if posture_id == _POSTURE_CHARGING:
+        # 充电中：保留 posture 旧值，仅 debug 记录（充电状态由下面 data[11] 字段独立上报）
+        log.debug("姿势 ID=5 → 充电中")
+    elif posture_id in _POSTURES:
         state.sensor_state["posture"] = _POSTURES[posture_id]
         log.debug(f"姿势: {_POSTURES[posture_id]}")
     else:
