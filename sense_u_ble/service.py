@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 
 from sense_u_ble import client, state
 from sense_u_ble.config import Config, init_logging
-from sense_u_ble.protocol import ALERT_MODES
+from sense_u_ble.protocol import ALERT_MODES, ALERT_LEVELS
 
 
 def _build_app(cfg: Config, log: logging.Logger) -> FastAPI:
@@ -51,12 +51,14 @@ def _build_app(cfg: Config, log: logging.Logger) -> FastAPI:
     async def _on_device_alert(mode: int) -> bool:
         """推送设备告警到 consumer，返回 True 表示 consumer 要求发 0xF6 ACK。"""
         label = ALERT_MODES.get(mode, f"mode={mode}")
+        # 按 mode 查严重程度；未知 mode 默认 danger（孩子安全相关的兜底偏严）
+        level = ALERT_LEVELS.get(mode, "danger")
         if not cfg.consumer_url:
             return True  # 无 consumer，直接 ACK 避免 LED 持续闪烁
         try:
             resp = await push_client.post(cfg.consumer_url, json={
                 "type":      "alert",
-                "level":     "danger",
+                "level":     level,
                 "mode":      mode,
                 "message":   label,
                 "timestamp": datetime.now().strftime("%H:%M:%S"),

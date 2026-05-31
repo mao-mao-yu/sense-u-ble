@@ -159,6 +159,14 @@ ALERT_MODES = {
     10: "prone + breath weak",
     11: "activity alert",
     65: "prone sleep breath weak",
+    81: "charge complete",          # 充电完成。不是危险事件，level=info（见 ALERT_LEVELS）
+}
+
+# 每个 alert mode 的严重程度。consumer 凭这个决定要不要响铃（BARK critical）/
+# 红色 embed（Discord）等。未列出的 mode 默认 danger（孩子安全相关都该是 danger，
+# 除非明确知道是 informational）。
+ALERT_LEVELS: dict[int, str] = {
+    81: "info",                     # 充电完成
 }
 
 
