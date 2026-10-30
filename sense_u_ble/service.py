@@ -24,7 +24,9 @@ from fastapi.responses import JSONResponse
 
 from sense_u_ble import client, state
 from sense_u_ble.config import Config, init_logging
-from sense_u_ble.protocol import ALERT_MODES, ALERT_LEVELS
+from sense_u_ble.protocol import (
+    ALERT_MODES, ALERT_LEVELS, BREATH_WEAK_ALERT_MODES, MUTED_ACK_MODES,
+)
 
 
 def _build_app(cfg: Config, log: logging.Logger) -> FastAPI:
@@ -50,6 +52,9 @@ def _build_app(cfg: Config, log: logging.Logger) -> FastAPI:
 
     async def _on_device_alert(mode: int) -> bool:
         """推送设备告警到 consumer，返回 True 表示 consumer 要求发 0xF6 ACK。"""
+        if mode not in BREATH_WEAK_ALERT_MODES:
+            log.info("设备告警已静音: mode=%s", mode)
+            return mode in MUTED_ACK_MODES
         label = ALERT_MODES.get(mode, f"mode={mode}")
         # 按 mode 查严重程度；未知 mode 默认 danger（孩子安全相关的兜底偏严）
         level = ALERT_LEVELS.get(mode, "danger")

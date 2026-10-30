@@ -101,8 +101,8 @@ def build_get_batch() -> bytes:
     return bytes(buf)
 
 def build_power_on() -> bytes:
-    """0xF5 F2 32 03 00 → DATA_CHAR_4 (启用告警)"""
-    return bytes([0xF5, 0xF2, 0x32, 0x03, 0x00])
+    """0xF5 F0 32 03 00 → DATA_CHAR_4 (关闭俯卧告警位)"""
+    return bytes([0xF5, 0xF0, 0x32, 0x03, 0x00])
 
 def build_temp_alarm() -> bytes:
     """0xB2 体感温度告警阈值 → DATA_CHAR_4"""

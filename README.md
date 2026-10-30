@@ -19,9 +19,10 @@ Linux, macOS, Windows.
 
 The wearable measures **breath rate, posture, in-clothing temperature,
 battery, activity level, wearing state, and charge status**. Device-initiated
-alerts (prone, weak breath, temperature out of range, …) are forwarded to the
-consumer as `type=alert` events; the consumer's HTTP response controls whether
-the driver sends a `0xF6` ACK to stop the wearable's LED.
+alerts involving weak breathing (modes 9, 10, 65) are forwarded to the
+consumer as `type=alert` events; other device alerts are muted. The consumer's
+HTTP response controls whether the driver sends a `0xF6` ACK for forwarded
+alerts.
 
 ---
 
@@ -35,7 +36,7 @@ the driver sends a `0xF6` ACK to stop the wearable's LED.
 - **Cross-platform** — Linux (Pi recommended), macOS, Windows
 - **Pairing tool included** — first-time pairing handshake reverse-engineered
   from APK analysis of the official Sense-U app
-- **Consumer-controlled Alert ACK** — device alerts are forwarded to the
+- **Consumer-controlled Alert ACK** — weak-breath alerts are forwarded to the
   consumer; consumer replies `{"ack": true}` to send `0xF6` and stop the LED
 
 ---
@@ -153,19 +154,19 @@ device-initiated alert. Two event shapes:
   "last_update": "13:42:55"   // HH:MM:SS of last successful parse
 }
 
-// type=alert — device-initiated alert from CHAR_2 (prone, weak breath, temperature, etc.)
+// type=alert — forwarded weak-breath alert from CHAR_2
 {
   "type":      "alert",
   "level":     "danger",
-  "mode":      2,             // raw alertMode from device (see alert mode table)
-  "message":   "prone alert", // human-readable label (see alert mode table)
+  "mode":      9,             // raw alertMode from device (see alert mode table)
+  "message":   "breath weak", // human-readable label (see alert mode table)
   "timestamp": "13:42:30"
 }
 ```
 
 ### Alert ACK — controlling the device LED
 
-When the driver receives a device alert, it POSTs `type=alert` to the consumer
+When the driver receives a weak-breath alert, it POSTs `type=alert` to the consumer
 **in a background task** (does not block BLE callbacks) and waits for the HTTP
 response. The consumer's response body controls whether the driver sends a
 `0xF6` ACK to stop the device's flashing LED:
@@ -324,7 +325,7 @@ HOST                                    DEVICE
  │◀────────── CHAR_1 notify: 70 00 …  ─────│  auth success (d[1]==0x00)
  │  write CHAR_4: 0xC0 01 (GET_BATCH)      │  ← init chain step 1
  │◀────────── CHAR_4 notify: C0 …     ─────│
- │  write CHAR_4: 0xF5 F2 32 03 (LEANING)  │  ← step 2: enable all alert switches
+ │  write CHAR_4: 0xF5 F0 32 03 (LEANING)  │  ← step 2: disable prone alert bit
  │◀────────── CHAR_4 notify: F5 …     ─────│
  │  write CHAR_4: 0xB2 … (TEMP_ALARM)      │  ← step 3: set temperature thresholds
  │◀────────── CHAR_4 notify: B2 …     ─────│
@@ -376,17 +377,17 @@ Total: 18 bytes. Written with `response=False`.
 
 Triggers the init chain; device replies with `0xC0` echo on CHAR_4.
 
-#### 0xF5 F2 — LeaningType → CHAR_4
+#### 0xF5 F0 — LeaningType → CHAR_4
 
 | Offset | Len | Value |
 |--------|-----|-------|
 | 0 | 1 | `0xF5` |
-| 1 | 1 | `0xF2` |
+| 1 | 1 | `0xF0` |
 | 2 | 1 | `0x32` |
 | 3 | 1 | `0x03` |
 | 4–19 | 16 | `0x00` |
 
-Enables all alert switches on the device.
+Keeps breathing monitoring enabled while clearing the prone-alert bit.
 
 #### 0xB2 — TempAlarm → CHAR_4
 
@@ -520,9 +521,11 @@ Alert modes — CHAR_2 rt=8, st=2 (value of alert `"message"` field):
 | 11 | `"activity alert"` |
 | 65 | `"prone sleep breath weak"` |
 
-On receiving `notify != 0`, the driver calls `on_device_alert(mode)`, which
-POSTs the alert to the consumer and conditionally sends `0xF6` based on the
-consumer's `{"ack": true/false}` response.
+On receiving `notify != 0`, the driver forwards only modes 9, 10, and 65 to
+the consumer. Known muted modes (2, 3, 4, 7, 8, 11) are acknowledged locally;
+mode 8 uses a zero-second delay because it shares an ACK bit with weak breath.
+Forwarded alerts are acknowledged according to the consumer's
+`{"ack": true/false}` response.
 
 #### CHAR_4 response — 0xBA snapshot
 

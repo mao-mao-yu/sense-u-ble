@@ -78,9 +78,9 @@ def pkt_get_batch() -> bytes:
 
 
 def pkt_leaning() -> bytes:
-    """0xF5 F2 LeaningType — 启用所有告警开关。"""
+    """0xF5 F0 LeaningType — 保留呼吸监测，关闭俯卧告警位。"""
     b = bytearray(20)
-    b[0] = 0xF5; b[1] = 0xF2; b[2] = 0x32; b[3] = 0x03
+    b[0] = 0xF5; b[1] = 0xF0; b[2] = 0x32; b[3] = 0x03
     return bytes(b)
 
 
@@ -161,6 +161,12 @@ ALERT_MODES = {
     65: "prone sleep breath weak",
     81: "charge complete",          # 充电完成。不是危险事件，level=info（见 ALERT_LEVELS）
 }
+
+# 组合事件也包含呼吸微弱，仍须通知；单独俯卧和其他设备事件不通知。
+BREATH_WEAK_ALERT_MODES = frozenset({9, 10, 65})
+# 这些静音事件有明确的 0xF6 ACK 位。未知事件和充电完成不能使用
+# pkt_alert_ack 的通用 0xFFFF 掩码，以免连呼吸微弱一起延迟。
+MUTED_ACK_MODES = frozenset({2, 3, 4, 7, 8, 11})
 
 # 每个 alert mode 的严重程度。consumer 凭这个决定要不要响铃（BARK critical）/
 # 红色 embed（Discord）等。未列出的 mode 默认 danger（孩子安全相关都该是 danger，

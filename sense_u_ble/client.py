@@ -114,8 +114,11 @@ async def run_loop(
 
                 async def _send_ack(mode: int) -> None:
                     try:
+                        # 呼吸过快 (8) 与呼吸微弱 (9/10/65) 共用 0x80 位；
+                        # 静音呼吸过快时不设重报延迟，避免压住真正的微弱呼吸告警。
+                        delay_s = 0 if mode == 8 else 300
                         await client.write_gatt_char(
-                            char_set, protocol.pkt_alert_ack(mode), response=False
+                            char_set, protocol.pkt_alert_ack(mode, delay_s), response=False
                         )
                         log.debug(f"0xF6 ACK 已发送: mode={mode}")
                     except Exception as e:
